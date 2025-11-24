@@ -30,6 +30,12 @@ Antes de comenzar, asegúrate de contar con lo siguiente:
 Asegúrate de tener los siguientes archivos en una carpeta del proyecto:
 - `app.py` (script principal del juego)
 - `requirements.txt` (lista de dependencias)
+- Carpeta `imagenes` (interfaces del juego):
+    - `inicio.png`
+    - `calibracion.png`
+    - `instrucciones_n1.png`
+    - `instrucciones_n2.png`
+    - `fin.png`
 
 ### Paso 2 (Opcional): Crear un entorno virtual
 

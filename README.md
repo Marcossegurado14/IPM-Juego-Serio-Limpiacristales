@@ -2,7 +2,7 @@
 
 ## Descripción
 
-**¡Limpia el Espejo!** es un juego serio diseñado específicamente para la rehabilitación física del miembro superior, con énfasis en el hombro. El juego se centra en mejorar tres aspectos fundamentales:
+**¡Limpia el Espejo!** es un juego serio diseñado específicamente para la rehabilitación física de las extremidades superiores, con énfasis en el hombro. El juego se centra en mejorar tres aspectos fundamentales:
 
 - **Rango de Movimiento (ROM)**: Amplitud del movimiento articular
 - **Coordinación**: Control y precisión del movimiento
@@ -17,7 +17,7 @@ La característica principal del juego es su sistema de detección de movimiento
 Antes de comenzar, asegúrate de contar con lo siguiente:
 
 - **Ordenador** compatible (Windows, Mac o Linux)
-- **Webcam funcional** integrada o externa
+- **Webcam funcional** (integrada o externa) y libre para utilizar (sin conexión activa a apps como Google Meet o Skype)
 - **Python 3.8 o superior** instalado en el sistema
 - **Buena iluminación** en el área de juego para una detección óptima
 
@@ -88,8 +88,8 @@ El cursor del juego está controlado por el **nudillo base del dedo corazón** d
 - Esta fase establece tu rango de movimiento personal
 
 #### 2. Nivel 1 - Limpieza General
-- Objetivo: Limpiar la suciedad marrón del espejo
-- Mecánica: Realiza movimientos libres tipo **"limpiaparabrisas"** con tu mano
+- Objetivo: Limpiar la suciedad marrón del espejo (exitoso a partir del 90%)
+- Mecánica: Realiza movimientos libres tipo **"limpieza de espejo"** con tu mano
 - Trabaja el rango de movimiento completo del hombro
 - No hay límite de tiempo, explora toda el área
 
@@ -105,13 +105,3 @@ Este nivel combina movimientos dinámicos con trabajo estático del hombro.
 
 - **ENTER**: Avanzar a la siguiente fase o reiniciar el juego
 - **ESC**: Salir del juego en cualquier momento
-
----
-
-## Créditos
-
-Desarrollado para la asignatura de **Interfaces (IPM)**
-
----
-
-*Disfruta de tu sesión de rehabilitación de forma divertida y efectiva. ¡Recuerda mantener una postura adecuada y no forzar movimientos que causen dolor!*

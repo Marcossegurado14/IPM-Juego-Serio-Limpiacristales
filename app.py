@@ -4,7 +4,7 @@ import numpy as np
 import time
 import random
 
-# --- CONFIGURACIÓN INICIAL ---
+# --- CONFIGURACIÓN DE MEDIAPIPE ---
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False, 
@@ -13,396 +13,333 @@ hands = mp_hands.Hands(
 )
 mp_drawing = mp.solutions.drawing_utils
 
-# Configuración Nivel 1 (Suciedad General)
-RADIO_PINCEL = 40  
-COLOR_SUCIEDAD = (200, 200, 200) # Gris claro
-OPACIDAD_SUCIEDAD = 0.8
-NIVEL_1_UMBRAL = 25 # Porcentaje para completar el Nivel 1
+# --- CONFIGURACIÓN ESTÉTICA (COLORES BGR) ---
+# Interfaz Gráfica (Azul y Blanco)
+COLOR_UI_AZUL = (200, 50, 0)      # Azul corporativo oscuro
+COLOR_UI_BLANCO = (255, 255, 255) # Blanco
 
-# Configuración Nivel 2 (Rápido - Reacción)
-LEVEL_2_TIME_LIMIT = 3.0 # Segundos antes de que la mancha desaparezca
-LEVEL_2_SPOTS_TOTAL = 5 # Cuántas manchas hay que limpiar/intentar para terminar el Nivel 2
-MANCHA_RADIO = 30 # Tamaño de la mancha pequeña
-MANCHA_COLOR = (0, 165, 255) # Color Naranja/Ámbar para diferenciación
+# Colores de Juego 
+COLOR_SUCIEDAD_BASE = (100, 140, 180) 
+COLOR_MANCHA_LIGERA = (120, 170, 210) 
+COLOR_MANCHA_PERSISTENTE = (40, 80, 139) 
 
-# Configuración Nivel 3 (Mantener la Mano)
-LEVEL_3_HOVER_TIME = 3.0 # Segundos que debe mantenerse la mano sobre la mancha
-LEVEL_3_SPOTS_TOTAL = 5 # Cuántas manchas hay que limpiar para terminar el Nivel 3
-MANCHA_COLOR_HOVER = (0, 0, 255) # Color Rojo
+# Colores Calibración
+COLOR_CALIB_PENDIENTE = (0, 0, 255)   # Rojo
+COLOR_CALIB_OK = (0, 255, 0)          # Verde
 
-# Nombre de la ventana unificado para evitar múltiples ventanas
-WINDOW_NAME = 'Limpiacristales - Juego'
+# --- CONFIGURACIÓN DE JUEGO ---
+# Nivel 1
+RADIO_PINCEL = 50  
+OPACIDAD_SUCIEDAD = 0.95
+NIVEL_1_UMBRAL = 10 
 
-# Inicializamos cámara
+# Nivel 2
+TOTAL_MANCHAS_A_GENERAR = 10 
+INTERVALO_APARICION = 2.0    
+RADIO_MANCHA = 35
+TIEMPO_HOVER_REQUERIDO = 1.5 
+
+# Ventana
+WINDOW_NAME = 'Juego de Rehabilitacion'
+
+# --- VARIABLES GLOBALES ---
 cap = cv2.VideoCapture(0)
 cap.set(3, 1280)
 cap.set(4, 720)
 
-# Variables de control de estado del juego
-game_state = 'START' # 'START', 'PLAYING', 'COMPLETED_L1', 'LEVEL_TWO', 'COMPLETED_L2', 'LEVEL_THREE', 'FINISHED'
-mask_suciedad = None # Máscara para Nivel 1
+# ESTADOS DEL JUEGO:
+# START -> INSTRUCT_CALIB -> CALIBRATION -> INSTRUCT_L1 -> LEVEL_1 -> COMPLETED_L1 -> INSTRUCT_L2 -> LEVEL_2 -> FINISHED
+game_state = 'START' 
+mask_suciedad = None 
 
-# Variables de Tiempos y Récords (Nivel 1)
-level_start_time = 0.0 
-current_attempt_time = 0.0 
-best_time = float('inf') 
+# Tiempos
+start_time_total = 0.0
+time_level_1 = 0.0
+time_level_2 = 0.0
+start_time_l2 = 0.0
+last_spawn_time = 0.0
 
-# Variables de Nivel 2 (Rápido)
-level_2_spot = None # Posición de la mancha
-level_2_spawn_time = 0.0 # Momento en que apareció la mancha
-level_2_spots_done = 0 # Contador de manchas procesadas (aparecidas)
-level_2_spots_hit = 0 # Contador de manchas acertadas (puntos)
+# Objetos
+manchas_nivel_2 = []
+manchas_generadas_count = 0
+esquinas_calibracion = [] 
 
-# Variables de Nivel 3 (Hover)
-level_3_spot = None # (cx, cy) de la mancha actual
-time_on_spot = 0.0 # Tiempo acumulado sobre la mancha
-hover_start_time = None # Hora de inicio del hover
-level_3_spots_cleaned = 0 # Contador de manchas limpiadas
+def draw_overlay(frame, opacity=0.95):
+    """Dibuja una capa blanca casi sólida para textos"""
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), COLOR_UI_BLANCO, -1)
+    return cv2.addWeighted(overlay, opacity, frame, 1 - opacity, 0)
 
+def draw_centered_text(img, text, font_scale, y_offset, color=COLOR_UI_AZUL, thickness=2):
+    """Ayuda para centrar texto horizontalmente"""
+    h, w = img.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+    cx = (w - tw) // 2
+    cy = (h // 2) + y_offset
+    cv2.putText(img, text, (cx, cy), font, font_scale, color, thickness)
 
-def create_new_spot(w, h, margin_factor=100):
-    """Genera una nueva mancha en una posición aleatoria de la pantalla."""
-    margin = MANCHA_RADIO + margin_factor 
-    cx = random.randint(margin, w - margin)
-    cy = random.randint(margin, h - margin)
-    return (cx, cy)
+def draw_footer_instructions(img):
+    """Dibuja las instrucciones de navegación comunes"""
+    h, w = img.shape[:2]
+    text = "[ENTER] Continuar    [ESC] Salir"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.7
+    (tw, th), _ = cv2.getTextSize(text, font, font_scale, 2)
+    cx = (w - tw) // 2
+    cy = h - 50
+    cv2.putText(img, text, (cx, cy), font, font_scale, (100, 100, 100), 2)
 
+def spawn_single_spot(w, h):
+    margen = 100
+    tipo = random.choice(['light', 'heavy'])
+    return {
+        'x': random.randint(margen, w - margen),
+        'y': random.randint(margen, h - margen),
+        'tipo': tipo,
+        'active': True,
+        'hover_start': None,
+        'progress': 0.0
+    }
 
-def start_new_spot_level_2(w, h):
-    """Inicializa una nueva mancha para el Nivel 2."""
-    global level_2_spot, level_2_spawn_time
-    level_2_spot = create_new_spot(w, h)
-    level_2_spawn_time = time.time()
+def init_calibration(w, h):
+    margen = 80
+    return [
+        {'x': margen, 'y': margen, 'reached': False},          
+        {'x': w - margen, 'y': margen, 'reached': False},      
+        {'x': margen, 'y': h - margen, 'reached': False},      
+        {'x': w - margen, 'y': h - margen, 'reached': False}   
+    ]
 
+def check_all_calibrated(esquinas):
+    for esq in esquinas:
+        if not esq['reached']: return False
+    return True
 
-print("Juego Listo. Esperando 'Enter' para empezar.")
+def check_level_2_finished(manchas, total_generadas):
+    if total_generadas < TOTAL_MANCHAS_A_GENERAR: return False
+    for m in manchas:
+        if m['active']: return False
+    return True
 
+# --- BUCLE PRINCIPAL ---
 while True:
     ret, frame = cap.read()
     if not ret: break
     
+    # Preparar imagen
     frame = cv2.flip(frame, 1)
     h, w, c = frame.shape
-    current_time = time.time() # Almacena el tiempo actual una vez por bucle
-
-    # MANEJO DE TECLAS
-    key = cv2.waitKey(1) & 0xFF
+    current_time = time.time()
     
-    if key == 27: # Salir con ESC
-        break
-    
-    if key == 13: # Iniciar/Reiniciar/Siguiente Nivel con ENTER
-        if game_state == 'START':
-            game_state = 'PLAYING'
-            mask_suciedad = None # Inicializa Nivel 1
-            level_start_time = current_time # INICIA EL TIEMPO DEL NIVEL 1
-            current_attempt_time = 0.0
-        elif game_state == 'COMPLETED_L1':
-            game_state = 'LEVEL_TWO'
-            level_2_spots_done = 0
-            level_2_spots_hit = 0
-            start_new_spot_level_2(w, h) # Comienza Nivel 2
-        elif game_state == 'COMPLETED_L2':
-            game_state = 'LEVEL_THREE'
-            level_3_spots_cleaned = 0
-            level_3_spot = create_new_spot(w, h) # Comienza Nivel 3
-            time_on_spot = 0.0
-            hover_start_time = None
-        elif game_state == 'FINISHED':
-             game_state = 'START' # Vuelve al inicio
-
-
-    # --- 1. MANEJO DE LA CÁMARA EN RGB ---
+    # Detección de Manos
     img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(img_rgb)
-    hand_cx, hand_cy = -1, -1 
+    puntero_x, puntero_y = -1, -1
     
     if results.multi_hand_landmarks:
-        hand_landmarks = results.multi_hand_landmarks[0]
-        muneca = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-        hand_cx = int(muneca.x * w)
-        hand_cy = int(muneca.y * h)
+        lm = results.multi_hand_landmarks[0]
+        # Usar Nudillo del Dedo Corazón (Middle Finger MCP)
+        landmark_punto = lm.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP]
+        puntero_x = int(landmark_punto.x * w)
+        puntero_y = int(landmark_punto.y * h)
         
-        # Dibujar esqueleto de la mano (solo en el juego)
-        if game_state in ['PLAYING', 'LEVEL_TWO', 'LEVEL_THREE']:
-            mp_drawing.draw_landmarks(
-                frame, 
-                hand_landmarks, 
-                mp_hands.HAND_CONNECTIONS, 
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=4),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
-            )
+        # Dibujar mano solo si estamos jugando o calibrando
+        if game_state in ['CALIBRATION', 'LEVEL_1', 'LEVEL_2']:
+            mp_drawing.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
+            cv2.circle(frame, (puntero_x, puntero_y), 10, (0, 255, 0), -1)
 
-
-    # --- 2. MANEJO DE LA MÁQUINA DE ESTADOS ---
+    # --- MÁQUINA DE ESTADOS ---
 
     if game_state == 'START':
-        # Pantalla de Inicio
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
-        alpha = 0.6 
-        frame_final = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        frame = draw_overlay(frame)
+        draw_centered_text(frame, "LIMPIA EL ESPEJO", 3.0, -80, COLOR_UI_AZUL, 6)
+        draw_centered_text(frame, "Juego Serio:", 1.0, 30, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, "Rehabilitacion / Fortalecimiento del Hombro", 1.0, 80, COLOR_UI_AZUL, 2)
+        draw_footer_instructions(frame)
         
-        text_start = "Pulsa ENTER para comenzar" 
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.5
-        font_thickness = 3
-        
-        (tw, th), baseline = cv2.getTextSize(text_start, font, font_scale, font_thickness)
-        cx = (w - tw) // 2
-        cy = (h + th) // 2 
-        
-        cv2.putText(frame_final, text_start, (cx, cy), 
-                    font, font_scale, (255, 255, 255), font_thickness)
-        
-        cv2.imshow(WINDOW_NAME, frame_final) 
-        
-    elif game_state == 'PLAYING':
-        # Lógica del Juego - Nivel 1 (Limpiar niebla general)
+    elif game_state == 'INSTRUCT_CALIB':
+        frame = draw_overlay(frame)
+        draw_centered_text(frame, "CALIBRACION", 1.5, -100, COLOR_UI_AZUL, 3)
+        draw_centered_text(frame, "Mueve tu mano hacia las", 0.9, -20, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, "4 esquinas rojas de la pantalla", 0.9, 30, COLOR_UI_AZUL, 2)
+        draw_footer_instructions(frame)
 
+    elif game_state == 'CALIBRATION':
+        frame = draw_overlay(frame, 0.3) 
+        
+        if not esquinas_calibracion:
+            esquinas_calibracion = init_calibration(w, h)
+            
+        cv2.rectangle(frame, (w//2 - 200, h - 100), (w//2 + 200, h - 40), (255,255,255), -1)
+        cv2.putText(frame, "Toca las esquinas rojas", (w//2 - 180, h - 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_UI_AZUL, 2)
+            
+        for esq in esquinas_calibracion:
+            color = COLOR_CALIB_OK if esq['reached'] else COLOR_CALIB_PENDIENTE
+            cv2.circle(frame, (esq['x'], esq['y']), 40, color, -1)
+            cv2.circle(frame, (esq['x'], esq['y']), 40, (255,255,255), 2)
+            
+            if puntero_x != -1:
+                dist = np.sqrt((puntero_x - esq['x'])**2 + (puntero_y - esq['y'])**2)
+                if dist < 40:
+                    esq['reached'] = True
+        
+        if check_all_calibrated(esquinas_calibracion):
+            cv2.putText(frame, "LISTO", (w//2 - 100, h//2), 
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 200, 0), 4)
+            cv2.imshow(WINDOW_NAME, frame)
+            cv2.waitKey(500) 
+            game_state = 'INSTRUCT_L1' 
+            mask_suciedad = None 
+
+    elif game_state == 'INSTRUCT_L1':
+        frame = draw_overlay(frame)
+        draw_centered_text(frame, "NIVEL 1: LIMPIEZA", 1.5, -100, COLOR_UI_AZUL, 3)
+        draw_centered_text(frame, "Mueve tu mano para limpiar el espejo y eliminar", 0.8, -20, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, "toda la suciedad marron en el menor tiempo posible.", 0.8, 30, COLOR_UI_AZUL, 2)
+        draw_footer_instructions(frame)
+
+    elif game_state == 'LEVEL_1':
         if mask_suciedad is None:
             mask_suciedad = np.ones((h, w), dtype=np.uint8) * 255
+            start_time_total = current_time
 
-        current_attempt_time = current_time - level_start_time
+        if puntero_x != -1:
+            cv2.circle(mask_suciedad, (puntero_x, puntero_y), RADIO_PINCEL, 0, -1)
 
-        if hand_cx != -1:
-            cv2.circle(mask_suciedad, (hand_cx, hand_cy), RADIO_PINCEL, 0, -1)
-            cv2.circle(frame, (hand_cx, hand_cy), RADIO_PINCEL, (0, 255, 0), 2)
+        capa_marron = np.zeros_like(frame)
+        capa_marron[:] = COLOR_SUCIEDAD_BASE
+        suciedad_visible = cv2.bitwise_and(capa_marron, capa_marron, mask=mask_suciedad)
+        frame = cv2.addWeighted(frame, 1, suciedad_visible, OPACIDAD_SUCIEDAD, 0)
+        
+        dirty_pixels = cv2.countNonZero(mask_suciedad)
+        percent_dirty = (dirty_pixels / (w * h)) * 100
+        time_level_1 = current_time - start_time_total
+        
+        cv2.rectangle(frame, (30, 40), (300, 140), COLOR_UI_BLANCO, -1)
+        cv2.putText(frame, f"Suciedad: {int(percent_dirty)}%", (40, 80), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_UI_AZUL, 2)
+        cv2.putText(frame, f"Tiempo: {time_level_1:.1f}s", (40, 120), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_UI_AZUL, 2)
+        
+        if percent_dirty < NIVEL_1_UMBRAL:
+            # CAMBIO: Pasamos a pantalla de completado, no directo a inst L2
+            game_state = 'COMPLETED_L1'
 
-        # COMPOSICIÓN DE IMAGEN
-        capa_gris = np.zeros_like(frame)
-        capa_gris[:] = COLOR_SUCIEDAD
-        capa_suciedad_final = cv2.bitwise_and(capa_gris, capa_gris, mask=mask_suciedad)
-        frame_final = cv2.addWeighted(frame, 1, capa_suciedad_final, OPACIDAD_SUCIEDAD, 0)
-        
-        # CALCULO DE PROGRESO
-        pixeles_totales = w * h
-        pixeles_sucios = cv2.countNonZero(mask_suciedad)
-        porcentaje_limpio = 100 - (pixeles_sucios / pixeles_totales * 100)
-        
-        # --- MOSTRAR HUD Nivel 1 ---
-        cv2.putText(frame_final, f'Limpiado: {int(porcentaje_limpio)}%', (50, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-
-        record_text = f'RECORD: {best_time:.2f}s' if best_time != float('inf') else 'RECORD: --'
-        cv2.putText(frame_final, record_text, (50, 150), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
-        
-        cv2.putText(frame_final, f'Tiempo: {current_attempt_time:.2f}s', (50, 200), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-        
-
-        if porcentaje_limpio > NIVEL_1_UMBRAL:
-            if current_attempt_time < best_time:
-                best_time = current_attempt_time
-            
-            game_state = 'COMPLETED_L1' # Transición al estado de finalización del nivel 1
-            
-        cv2.imshow(WINDOW_NAME, frame_final)
-        
     elif game_state == 'COMPLETED_L1':
-        # Pantalla de Transición entre Nivel 1 y Nivel 2
-        
-        text1 = "Evento Completado!!"
-        text2 = "Pulsa ENTER para el siguiente juego"
-        text_last_time = f"Tu Tiempo: {current_attempt_time:.2f} segundos"
-        
-        if best_time != float('inf'):
-            text_record = f"Record: {best_time:.2f} segundos"
-        else:
-            text_record = "Record: -- segundos"
-        
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text_color = (0, 255, 0) # Verde
+        # NUEVA PANTALLA: Confirmación de Nivel 1 terminado
+        frame = draw_overlay(frame)
+        draw_centered_text(frame, "NIVEL 1 COMPLETADO", 1.5, -100, COLOR_UI_AZUL, 3)
+        draw_centered_text(frame, f"Tiempo registrado: {time_level_1:.2f}s", 1.0, -20, (50, 50, 50), 2)
+        draw_footer_instructions(frame)
 
-        # 1. MENSAJE PRINCIPAL
-        (tw1, th1), baseline1 = cv2.getTextSize(text1, font, 1.5, 4)
-        cx1 = (w - tw1) // 2
-        cy1 = h // 2 - 150 
-
-        # 2. TIEMPO ACTUAL
-        (tw_lt, th_lt), _ = cv2.getTextSize(text_last_time, font, 1.2, 2)
-        cx_lt = (w - tw_lt) // 2
-        cy_lt = h // 2 - 50 
-
-        # 3. RECORD
-        (tw_r, th_r), _ = cv2.getTextSize(text_record, font, 1.2, 2)
-        cx_r = (w - tw_r) // 2
-        cy_r = h // 2 
-
-        # 4. PULSA ENTER
-        (tw2, th2), baseline2 = cv2.getTextSize(text2, font, 1.0, 2)
-        cx2 = (w - tw2) // 2
-        cy2 = h // 2 + 100 
-
-        cv2.putText(frame, text1, (cx1, cy1), font, 1.5, text_color, 4)
-        cv2.putText(frame, text_last_time, (cx_lt, cy_lt), font, 1.2, (255, 255, 255), 2)
-        cv2.putText(frame, text_record, (cx_r, cy_r), font, 1.2, (255, 255, 0), 2)
-        cv2.putText(frame, text2, (cx2, cy2), font, 1.0, text_color, 2)
+    elif game_state == 'INSTRUCT_L2':
+        # PANTALLA DE INSTRUCCIONES NIVEL 2
+        frame = draw_overlay(frame)
         
-        cv2.imshow(WINDOW_NAME, frame)
+        draw_centered_text(frame, "NIVEL 2: MANCHAS", 1.5, -140, COLOR_UI_AZUL, 3)
+        
+        # Frase motivacional solicitada
+        draw_centered_text(frame, "El espejo ha quedado limpio.", 0.8, -80, (0, 100, 0), 2)
+        draw_centered_text(frame, "Evita que vuelva a ensuciarse", 0.8, -40, (0, 100, 0), 2)
+        
+        # Instrucciones
+        draw_centered_text(frame, "1. Manchas CLARAS: Pasada rapida", 0.8, 40, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, "2. Manchas OSCURAS: Manten la mano encima", 0.8, 90, COLOR_UI_AZUL, 2)
+        
+        draw_footer_instructions(frame)
 
-    elif game_state == 'LEVEL_TWO':
-        # Lógica del Juego - Nivel 2 (Rápido - Reacción)
-        
-        if level_2_spots_done >= LEVEL_2_SPOTS_TOTAL:
-            game_state = 'COMPLETED_L2' # Pasa a la transición al Nivel 3
-            level_2_spot = None # Limpia la mancha
-        
-        is_on_spot = False
-        
-        # --- Lógica de Detección de Mancha ---
-        if hand_cx != -1 and level_2_spot:
-            spot_x, spot_y = level_2_spot
+    elif game_state == 'LEVEL_2':
+        if start_time_l2 == 0:
+            start_time_l2 = current_time
+            last_spawn_time = current_time - INTERVALO_APARICION 
+            manchas_nivel_2 = []
+            manchas_generadas_count = 0
             
-            # Dibujar la mancha
-            cv2.circle(frame, level_2_spot, MANCHA_RADIO, MANCHA_COLOR, -1)
-
-            # Calcular la distancia de la muñeca a la mancha
-            distance = np.sqrt((hand_cx - spot_x)**2 + (hand_cy - spot_y)**2)
+        time_level_2 = current_time - start_time_l2
+        
+        if (manchas_generadas_count < TOTAL_MANCHAS_A_GENERAR and 
+            current_time - last_spawn_time > INTERVALO_APARICION):
+            manchas_nivel_2.append(spawn_single_spot(w, h))
+            manchas_generadas_count += 1
+            last_spawn_time = current_time
+        
+        for mancha in manchas_nivel_2:
+            if not mancha['active']: continue
             
-            if distance < MANCHA_RADIO:
-                is_on_spot = True
-        
-        # --- Lógica del Temporizador y Acierto ---
-        time_elapsed = current_time - level_2_spawn_time
-        
-        if is_on_spot:
-            # 1. ACIERTO: Pone la mano a tiempo
-            level_2_spots_hit += 1
-            level_2_spots_done += 1
-            start_new_spot_level_2(w, h) # Genera nueva mancha inmediatamente
-        
-        elif time_elapsed >= LEVEL_2_TIME_LIMIT:
-            # 2. FALLO: Se acaba el tiempo
-            level_2_spots_done += 1
-            start_new_spot_level_2(w, h) # Genera nueva mancha
-        
-        # Dibujar progreso visual (solo tiempo restante)
-        if level_2_spot:
-            # Tiempo restante para la mancha actual
-            time_left = max(0, LEVEL_2_TIME_LIMIT - time_elapsed)
-            cv2.putText(frame, f'Tiempo: {time_left:.1f}s', (w - 250, 150), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            mx, my = mancha['x'], mancha['y']
+            colision = False
             
+            color_m = COLOR_MANCHA_LIGERA if mancha['tipo'] == 'light' else COLOR_MANCHA_PERSISTENTE
+            cv2.circle(frame, (mx, my), RADIO_MANCHA, color_m, -1)
+            cv2.circle(frame, (mx, my), RADIO_MANCHA, (255,255,255), 2)
+
+            if puntero_x != -1:
+                dist = np.sqrt((puntero_x - mx)**2 + (puntero_y - my)**2)
+                if dist < RADIO_MANCHA: colision = True
+            
+            if colision:
+                if mancha['tipo'] == 'light':
+                    mancha['active'] = False 
+                elif mancha['tipo'] == 'heavy':
+                    if mancha['hover_start'] is None: mancha['hover_start'] = current_time
+                    elapsed = current_time - mancha['hover_start']
+                    mancha['progress'] = min(elapsed / TIEMPO_HOVER_REQUERIDO, 1.0)
+                    angulo = int(mancha['progress'] * 360)
+                    cv2.ellipse(frame, (mx, my), (RADIO_MANCHA+5, RADIO_MANCHA+5), 0, 0, angulo, (0, 255, 255), 4)
+                    if mancha['progress'] >= 1.0: mancha['active'] = False
+            else:
+                if mancha['tipo'] == 'heavy':
+                    mancha['hover_start'] = None
+                    mancha['progress'] = 0.0
+
+        active_count = sum(1 for m in manchas_nivel_2 if m['active'])
+        pendientes = active_count + (TOTAL_MANCHAS_A_GENERAR - manchas_generadas_count)
         
-        # --- Mostrar HUD de Nivel 2 ---
-        cv2.putText(frame, f'Aciertos: {level_2_spots_hit}/{LEVEL_2_SPOTS_TOTAL}', (50, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 2, (MANCHA_COLOR), 3) # Usamos el color de la mancha
-
-        cv2.imshow(WINDOW_NAME, frame)
-
-    elif game_state == 'COMPLETED_L2':
-        # Pantalla de Transición entre Nivel 2 y Nivel 3
+        cv2.rectangle(frame, (30, 40), (300, 140), COLOR_UI_BLANCO, -1)
+        cv2.putText(frame, f"Restantes: {pendientes}", (40, 80), 
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_UI_AZUL, 2)
+        cv2.putText(frame, f"Tiempo: {time_level_2:.1f}s", (40, 120), 
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_UI_AZUL, 2)
         
-        text1 = "Nivel 2 Completado!!"
-        text2 = "Pulsa ENTER para el Nivel 3"
-        text_score = f"Acertaste: {level_2_spots_hit} de {LEVEL_2_SPOTS_TOTAL}"
-        
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text_color = (0, 255, 0) # Verde
-
-        # 1. MENSAJE PRINCIPAL
-        (tw1, th1), _ = cv2.getTextSize(text1, font, 1.5, 4)
-        cx1 = (w - tw1) // 2
-        cy1 = h // 2 - 100
-
-        # 2. PUNTUACIÓN
-        (tw_s, th_s), _ = cv2.getTextSize(text_score, font, 1.2, 2)
-        cx_s = (w - tw_s) // 2
-        cy_s = h // 2 
-
-        # 3. PULSA ENTER
-        (tw2, th2), _ = cv2.getTextSize(text2, font, 1.0, 2)
-        cx2 = (w - tw2) // 2
-        cy2 = h // 2 + 100 
-
-        cv2.putText(frame, text1, (cx1, cy1), font, 1.5, text_color, 4)
-        cv2.putText(frame, text_score, (cx_s, cy_s), font, 1.2, (255, 255, 255), 2)
-        cv2.putText(frame, text2, (cx2, cy2), font, 1.0, text_color, 2)
-        
-        cv2.imshow(WINDOW_NAME, frame)
-
-    elif game_state == 'LEVEL_THREE':
-        # Lógica del Juego - Nivel 3 (Mantener la mano, el antiguo Nivel 2)
-        
-        if level_3_spots_cleaned >= LEVEL_3_SPOTS_TOTAL:
+        if check_level_2_finished(manchas_nivel_2, manchas_generadas_count):
             game_state = 'FINISHED'
-            level_3_spot = None # Limpia la mancha
-        
-        is_on_spot = False
-        
-        if hand_cx != -1 and level_3_spot:
-            spot_x, spot_y = level_3_spot
-            
-            cv2.circle(frame, level_3_spot, MANCHA_RADIO, MANCHA_COLOR_HOVER, -1)
-
-            distance = np.sqrt((hand_cx - spot_x)**2 + (hand_cy - spot_y)**2)
-            
-            if distance < MANCHA_RADIO:
-                is_on_spot = True
-        
-        # --- Lógica del Temporizador de Hover ---
-        if is_on_spot:
-            if hover_start_time is None:
-                hover_start_time = current_time
-            
-            time_on_spot = current_time - hover_start_time
-            
-            # Dibujar el progreso visual (círculo)
-            angle = int((time_on_spot / LEVEL_3_HOVER_TIME) * 360)
-            if level_3_spot:
-                # Dibuja el arco de progreso amarillo
-                cv2.ellipse(frame, level_3_spot, (MANCHA_RADIO + 10, MANCHA_RADIO + 10), 
-                            0, 0, angle, (255, 255, 0), 5) # Amarillo
-                
-            # Si el tiempo requerido se cumple
-            if time_on_spot >= LEVEL_3_HOVER_TIME:
-                level_3_spots_cleaned += 1
-                hover_start_time = None
-                time_on_spot = 0.0
-                
-                if level_3_spots_cleaned < LEVEL_3_SPOTS_TOTAL:
-                    level_3_spot = create_new_spot(w, h) # Nueva mancha
-        else:
-            # Si se retira la mano, reiniciamos el temporizador
-            hover_start_time = None
-            time_on_spot = 0.0
-
-
-        # --- Mostrar HUD de Nivel 3 ---
-        cv2.putText(frame, f'Limpiadas: {level_3_spots_cleaned}/{LEVEL_3_SPOTS_TOTAL}', (50, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 2, MANCHA_COLOR_HOVER, 3)
-        
-        cv2.imshow(WINDOW_NAME, frame)
 
     elif game_state == 'FINISHED':
-        # Pantalla de Juego Terminado
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
-        alpha = 0.6 
-        frame_final = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        frame = draw_overlay(frame)
+        total_score = time_level_1 + time_level_2
         
-        text1 = "¡JUEGO TERMINADO!"
-        text2 = "Gracias por participar. Pulsa ENTER para volver a empezar."
+        draw_centered_text(frame, "EJERCICIO FINALIZADO", 1.5, -100, COLOR_UI_AZUL, 3)
+        draw_centered_text(frame, f"Nivel 1: {time_level_1:.1f}s", 1.0, -30, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, f"Nivel 2: {time_level_2:.1f}s", 1.0, 20, COLOR_UI_AZUL, 2)
+        draw_centered_text(frame, f"TOTAL: {total_score:.2f}s", 1.5, 90, (0, 0, 180), 3) 
         
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        
-        (tw1, th1), _ = cv2.getTextSize(text1, font, 2.0, 5)
-        cx1 = (w - tw1) // 2
-        cy1 = h // 2 - 50
+        draw_centered_text(frame, "[ENTER] Reiniciar    [ESC] Salir", 0.8, 160, (100,100,100), 2)
 
-        (tw2, th2), _ = cv2.getTextSize(text2, font, 1.0, 2)
-        cx2 = (w - tw2) // 2
-        cy2 = h // 2 + 50
+    # --- INPUT ---
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27: # ESC
+        break
+    elif key == 13: # ENTER
+        if game_state == 'START':
+            game_state = 'INSTRUCT_CALIB'
+        elif game_state == 'INSTRUCT_CALIB':
+            game_state = 'CALIBRATION'
+        elif game_state == 'INSTRUCT_L1':
+            game_state = 'LEVEL_1'
+        elif game_state == 'COMPLETED_L1': # Nuevo estado intermedio
+            game_state = 'INSTRUCT_L2'
+        elif game_state == 'INSTRUCT_L2':
+            game_state = 'LEVEL_2'
+        elif game_state == 'FINISHED':
+            mask_suciedad = None
+            manchas_nivel_2 = []
+            esquinas_calibracion = []
+            start_time_l2 = 0
+            game_state = 'START'
 
-        cv2.putText(frame_final, text1, (cx1, cy1), 
-                    font, 2.0, (255, 255, 0), 5)
-        cv2.putText(frame_final, text2, (cx2, cy2), 
-                    font, 1.0, (255, 255, 255), 2)
-        
-        cv2.imshow(WINDOW_NAME, frame_final)
-
+    cv2.imshow(WINDOW_NAME, frame)
 
 cap.release()
 cv2.destroyAllWindows()
